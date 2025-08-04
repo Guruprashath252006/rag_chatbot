@@ -1,1 +1,8 @@
-pip freeze > requirements.txt
+
+streamlit
+langchain
+langchain-community
+openai
+python-dotenv
+pypdf2
+faiss-cpu
