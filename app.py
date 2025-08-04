@@ -1,50 +1,53 @@
 import os
 import streamlit as st
 from PyPDF2 import PdfReader
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import FAISS
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.vectorstores import FAISS
+from langchain.embeddings import OpenAIEmbeddings
+from langchain_community.llms import Ollama
 from langchain.llms import OpenAI
-from langchain.chains import RetrievalQA
+from langchain.chains import ConversationalRetrievalChain
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# --- Function to read PDF ---
-def extract_text_from_pdf(uploaded_file):
-    pdf = PdfReader(uploaded_file)
-    text = ""
-    for page in pdf.pages:
-        text += page.extract_text()
-    return text
+USE_OLLAMA = os.getenv("USE_OLLAMA", "true").lower() == "true"
 
-# --- Load & Embed PDF ---
-def create_vector_store(text):
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-    chunks = splitter.split_text(text)
-    embeddings = OpenAIEmbeddings()
-    vectorstore = FAISS.from_texts(chunks, embedding=embeddings)
-    return vectorstore
+llm = Ollama(model="llama3") if USE_OLLAMA else OpenAI(temperature=0)
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="Candidate Chatbot", layout="wide")
-st.title("📄 RAG Chatbot for Candidate Info")
+st.set_page_config(page_title="Resume Chatbot", layout="wide")
+st.title("💬 Resume Chatbot — Chat with uploaded resumes")
 
-uploaded_file = st.file_uploader("Upload Resume PDF", type="pdf")
+uploaded_files = st.file_uploader("Upload Resume PDFs", type="pdf", accept_multiple_files=True)
 
-if uploaded_file:
-    with st.spinner("Processing PDF..."):
-        text = extract_text_from_pdf(uploaded_file)
-        vectorstore = create_vector_store(text)
+if uploaded_files:
+    with st.spinner("Processing documents..."):
+        all_text = ""
+        for f in uploaded_files:
+            pdf = PdfReader(f)
+            for page in pdf.pages:
+                all_text += page.extract_text() or ""
+
+        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+        chunks = splitter.split_text(all_text)
+        embeddings = OpenAIEmbeddings()
+        vectorstore = FAISS.from_texts(chunks, embedding=embeddings)
+
         retriever = vectorstore.as_retriever()
-        llm = OpenAI(temperature=0)
-        qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
+        qa = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever)
 
-    st.success("PDF processed successfully!")
+        if "chat_history" not in st.session_state:
+            st.session_state.chat_history = []
 
-    user_question = st.text_input("Ask a question about any candidate (e.g., 'Tell me about John Doe')")
-    if user_question:
-        with st.spinner("Fetching answer..."):
-            response = qa_chain.run(user_question)
-            st.write("### 📌 Answer:")
-            st.markdown(response)
+        user_input = st.chat_input("Ask about any candidate or detail...")
+
+        if user_input:
+            with st.spinner("Generating answer..."):
+                result = qa({"question": user_input, "chat_history": st.session_state.chat_history})
+                st.session_state.chat_history.append((user_input, result["answer"]))
+
+        for user_msg, bot_msg in st.session_state.chat_history:
+            with st.chat_message("user"):
+                st.markdown(user_msg)
+            with st.chat_message("assistant"):
+                st.markdown(bot_msg)
