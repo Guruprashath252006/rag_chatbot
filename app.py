@@ -1,53 +1,83 @@
-import os
 import streamlit as st
-from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains.question_answering import load_qa_chain
+from langchain.chat_models import ChatOpenAI
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import CharacterTextSplitter
 from langchain.vectorstores import FAISS
 from langchain.embeddings import OpenAIEmbeddings
-from langchain_community.llms import Ollama
-from langchain.llms import OpenAI
-from langchain.chains import ConversationalRetrievalChain
 from dotenv import load_dotenv
+import os
 
 load_dotenv()
 
-USE_OLLAMA = os.getenv("USE_OLLAMA", "true").lower() == "true"
+# Setup page
+st.set_page_config(page_title="🤖 Online Chatbot Assistant", layout="wide")
+st.markdown("""
+    <style>
+        .user-message {
+            background-color: #DCF8C6;
+            padding: 10px;
+            border-radius: 10px;
+            margin: 5px 0;
+            text-align: right;
+        }
+        .bot-message {
+            background-color: #F1F0F0;
+            padding: 10px;
+            border-radius: 10px;
+            margin: 5px 0;
+            text-align: left;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-llm = Ollama(model="llama3") if USE_OLLAMA else OpenAI(temperature=0)
+st.title("🤖 Online Chatbot Assistant")
+st.caption("A friendly assistant powered by LangChain and OpenAI")
 
-st.set_page_config(page_title="Resume Chatbot", layout="wide")
-st.title("💬 Resume Chatbot — Chat with uploaded resumes")
+# Sidebar
+with st.sidebar:
+    st.header("📄 Upload PDF")
+    uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+    st.markdown("""
+    <hr>
+    👋 Ask me anything based on the PDF.
+    """)
 
-uploaded_files = st.file_uploader("Upload Resume PDFs", type="pdf", accept_multiple_files=True)
+# Conversation history
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-if uploaded_files:
-    with st.spinner("Processing documents..."):
-        all_text = ""
-        for f in uploaded_files:
-            pdf = PdfReader(f)
-            for page in pdf.pages:
-                all_text += page.extract_text() or ""
+# Function to process PDF
+def process_pdf(file):
+    loader = PyPDFLoader(file.name)
+    documents = loader.load()
+    text_splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    docs = text_splitter.split_documents(documents)
+    embeddings = OpenAIEmbeddings()
+    db = FAISS.from_documents(docs, embeddings)
+    return db
 
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-        chunks = splitter.split_text(all_text)
-        embeddings = OpenAIEmbeddings()
-        vectorstore = FAISS.from_texts(chunks, embedding=embeddings)
+# Process file and initialize chain
+if uploaded_file:
+    with st.spinner("Processing PDF and building vector store..."):
+        db = process_pdf(uploaded_file)
+        chain = load_qa_chain(ChatOpenAI(model_name="gpt-3.5-turbo"), chain_type="stuff")
 
-        retriever = vectorstore.as_retriever()
-        qa = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever)
+    # Chat input and response
+    query = st.chat_input("Ask something...")
 
-        if "chat_history" not in st.session_state:
-            st.session_state.chat_history = []
+    if query:
+        st.session_state.history.append(("user", query))
+        docs = db.similarity_search(query)
+        response = chain.run(input_documents=docs, question=query)
+        st.session_state.history.append(("bot", response))
 
-        user_input = st.chat_input("Ask about any candidate or detail...")
+    # Display messages
+    for role, message in st.session_state.history:
+        if role == "user":
+            st.markdown(f'<div class="user-message">{message}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown(f'<div class="bot-message">{message}</div>', unsafe_allow_html=True)
 
-        if user_input:
-            with st.spinner("Generating answer..."):
-                result = qa({"question": user_input, "chat_history": st.session_state.chat_history})
-                st.session_state.chat_history.append((user_input, result["answer"]))
-
-        for user_msg, bot_msg in st.session_state.chat_history:
-            with st.chat_message("user"):
-                st.markdown(user_msg)
-            with st.chat_message("assistant"):
-                st.markdown(bot_msg)
+else:
+    st.info("Please upload a PDF to get started.")
